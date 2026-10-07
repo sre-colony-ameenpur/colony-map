@@ -17,71 +17,90 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px sy
 h2{font-size:13px;margin:14px 8px 4px;color:var(--warn)}
 #map{flex:1;background:#e9e6e0}
 .chip{background:var(--chip);color:var(--chipfg);border-radius:4px;padding:1px 3px;font:600 10px/1.1 system-ui;text-align:center;width:84px;transform:translate(-50%,9px);box-shadow:0 0 0 1px #fff8;overflow-wrap:anywhere}
+.chip.empty{background:#6b7280;color:#fff}.dot.empty{background:#6b7280}
+#login{margin:0 12px 8px;padding:9px;border-radius:6px;background:var(--chip);color:var(--chipfg);font-weight:600;text-align:center;cursor:pointer}
 .chip.hl{outline:3px solid #f59e0b;z-index:999!important}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--chip);border:1px solid #fff;transform:translate(-50%,-50%)}
 @media(max-width:640px){#app{flex-direction:column-reverse}#side{width:auto;max-width:none;height:38%;border-right:0;border-top:1px solid var(--line)}}
 </style></head>
 <body><div id="app">
 <div id="side"><h1>Sai Ram Enclave - Voter Map</h1>
-<p>Find your name, check it sits on the right plot. Zoom in with + / pinch. Wrong or missing? Tell the Election Committee within 24 hours.</p>
+<p id="hint">Find your name, check it sits on the right plot. Zoom in with + / pinch. Wrong or missing? Tell the Election Committee within 24 hours.</p>
+<div id="login">&#128274; Login to see members</div>
 <input id="q" placeholder="Search name or plot, e.g. A-12" autocomplete="off"><div id="list"></div></div>
 <div id="map"></div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<script>
-const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-async function unlock(){
+<script>window.UNLOCK=async function(silent){
+  const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
   const E=await (await fetch('data.enc')).json();
   for(;;){
     let pw=null;try{pw=sessionStorage.getItem('mp')}catch(e){}
-    if(!pw)pw=prompt('Enter the password to view the voter map:');
-    if(pw===null){document.body.innerHTML='<p style="padding:20px">Password required. Reload to try again.</p>';throw 0}
+    if(!pw){if(silent)return null;pw=prompt('Enter the password to see members:')}
+    if(pw===null)return null;
     try{
       const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
       const k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(E.salt),iterations:E.iter,hash:'SHA-256'},k0,{name:'AES-GCM',length:256},false,['decrypt']);
       const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64(E.iv)},k,b64(E.ct));
       try{sessionStorage.setItem('mp',pw)}catch(e){}
       return JSON.parse(new TextDecoder().decode(pt));
-    }catch(e){try{sessionStorage.removeItem('mp')}catch(_){}; alert('Wrong password, try again.')}
+    }catch(e){try{sessionStorage.removeItem('mp')}catch(_){}; if(silent)return null; alert('Wrong password, try again.')}
   }
-}
-unlock().then(D=>{
+};</script>
+<script>
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+fetch('data.json').then(r=>r.json()).then(D=>{
+  let voters=D.voters||[],unlocated=D.unlocated||[],isIn=!!D.voters;   // protected builds ship plots only; names arrive after login
   const U=2**D.maxz;                                   // 1 latlng unit = U native px at zoom 0 scale
   const ll=([x,y])=>L.latLng(-y/U,x/U);                // native px -> latlng
   const map=L.map('map',{crs:L.CRS.Simple,minZoom:0,maxZoom:D.maxz+2,zoomSnap:.5,attributionControl:false});
   const bounds=L.latLngBounds(ll([0,D.h]),ll([D.w,0]));
   L.tileLayer('tiles/{z}/{x}/{y}.jpg',{minZoom:0,maxNativeZoom:D.maxz,maxZoom:D.maxz+2,noWrap:true,bounds}).addTo(map);
   map.fitBounds(bounds);map.setMaxBounds(bounds.pad(.2));
-  const chips=[];                                      // {v, marker, el}
-  const plotMarks=new Map();                           // plot id -> voters sharing it
-  D.voters.forEach(v=>v.ids.forEach(id=>{(plotMarks.get(id)||plotMarks.set(id,[]).get(id)).push(v)}));
   const at={};D.plots.forEach(p=>at[p.id]=p.at);
+  let plotMarks=new Map();                             // plot id -> voters sharing it
+  const index=()=>{plotMarks=new Map();voters.forEach(v=>v.ids.forEach(id=>{(plotMarks.get(id)||plotMarks.set(id,[]).get(id)).push(v)}))};
+  index();
   const layer=L.layerGroup().addTo(map);
   function draw(){
-    layer.clearLayers();const z=map.getZoom();
-    plotMarks.forEach((vs,id)=>{
-      const names=vs.map(v=>esc(v.name)).join(' / ');
-      const icon=z<D.maxz-1.5?L.divIcon({className:'',html:'<div class="dot"></div>',iconSize:[0,0]})
-        :L.divIcon({className:'',html:`<div class="chip" data-id="${id}">${names}</div>`,iconSize:[0,0]});
-      L.marker(ll(at[id]),{icon,title:`${id}: ${vs.map(v=>v.name).join(', ')}`}).addTo(layer);
+    layer.clearLayers();const z=map.getZoom(),far=z<D.maxz-1.5;
+    D.plots.forEach(({id})=>{
+      const vs=plotMarks.get(id),cls=vs?'':' empty';
+      const icon=far?L.divIcon({className:'',html:`<div class="dot${cls}"></div>`,iconSize:[0,0]})
+        :L.divIcon({className:'',html:`<div class="chip${cls}" data-id="${id}">${vs?vs.map(v=>esc(v.name)).join(' / '):esc(id)}</div>`,iconSize:[0,0]});
+      L.marker(ll(at[id]),{icon,title:vs?`${id}: ${vs.map(v=>v.name).join(', ')}`:id}).addTo(layer);
     });
   }
   map.on('zoomend',draw);draw();
-  const list=document.getElementById('list'),q=document.getElementById('q');
+  const list=document.getElementById('list'),q=document.getElementById('q'),side=document.getElementById('side');
+  const login=document.getElementById('login'),hint=document.getElementById('hint');
+  const hl=ids=>document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('hl',ids.includes(c.dataset.id)));
+  const fly=id=>{if(!at[id])return;map.flyTo(ll(at[id]),D.maxz,{duration:.6});setTimeout(()=>hl([id]),750)};
   function render(){
     const t=q.value.trim().toLowerCase().replace(/\s+/g,'');
     const m=s=>!t||s.toLowerCase().replace(/[\s]+/g,'').includes(t);
-    const a=D.voters.filter(v=>m(v.name+v.plot+v.ids.join('')));
-    const b=D.unlocated.filter(v=>m(v.name+v.plot));
-    list.innerHTML=a.map((v,i)=>`<div class="it" data-i="${D.voters.indexOf(v)}">${esc(v.name)}<small>Plot ${esc(v.plot)} - ${esc(v.type)}</small></div>`).join('')
+    if(!isIn){
+      list.innerHTML=D.plots.filter(p=>m(p.id)).map(p=>`<div class="it" data-p="${esc(p.id)}">${esc(p.id)}</div>`).join('');return;
+    }
+    const a=voters.filter(v=>m(v.name+v.plot+v.ids.join('')));
+    const b=unlocated.filter(v=>m(v.name+v.plot));
+    list.innerHTML=a.map(v=>`<div class="it" data-i="${voters.indexOf(v)}">${esc(v.name)}<small>Plot ${esc(v.plot)} - ${esc(v.type)}</small></div>`).join('')
      +(b.length?`<h2>Not located on the map yet (${b.length})</h2>`+b.map(v=>`<div class="it no">${esc(v.name)}<small>Plot ${esc(v.plot)} - ${esc(v.type)}</small></div>`).join(''):'');
   }
-  list.onclick=e=>{const it=e.target.closest('.it[data-i]');if(!it)return;
-    const v=D.voters[+it.dataset.i];map.flyTo(ll(v.at[0]),D.maxz,{duration:.6});
-    setTimeout(()=>{document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('hl',v.ids.includes(c.dataset.id)))},750);};
+  list.onclick=e=>{
+    const p=e.target.closest('.it[data-p]');if(p)return fly(p.dataset.p);
+    const it=e.target.closest('.it[data-i]');if(!it)return;
+    const v=voters[+it.dataset.i];map.flyTo(ll(v.at[0]),D.maxz,{duration:.6});setTimeout(()=>hl(v.ids),750)};
+  const enter=r=>{voters=r.voters;unlocated=r.unlocated;isIn=true;index();draw();q.placeholder='Search name or plot, e.g. A-12';
+    login.style.display='none';hint.textContent='Find your name, check it sits on the right plot. Zoom in with + / pinch. Wrong or missing? Tell the Election Committee within 24 hours.';render()};
+  if(isIn||!window.UNLOCK){login.style.display='none'}
+  else{
+    q.placeholder='Search plot, e.g. A-12';
+    hint.textContent='Showing plot numbers only. Log in to see members on the map.';
+    login.onclick=async()=>{try{const r=await window.UNLOCK(false);if(r)enter(r)}catch(e){}};
+    window.UNLOCK(true).then(r=>{if(r)enter(r)}).catch(()=>{});   // silent re-login if this tab already has the password
+  }
   q.oninput=render;render();
-  const goto=id=>{if(!at[id])return;map.setView(ll(at[id]),D.maxz,{animate:false});draw();
-    document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('hl',c.dataset.id===id))};
+  const goto=id=>{if(!at[id])return;map.setView(ll(at[id]),D.maxz,{animate:false});draw();hl([id])};
   const h=decodeURIComponent(location.hash.slice(1)).toUpperCase();if(h)goto(h);   // e.g. index.html#A-12
 });
 </script></body></html>
