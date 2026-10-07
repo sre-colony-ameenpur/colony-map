@@ -17,10 +17,16 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px sy
 h2{font-size:13px;margin:14px 8px 4px;color:var(--warn)}
 #map{flex:1;background:#e9e6e0}
 .chip{background:var(--chip);color:var(--chipfg);border-radius:4px;padding:1px 3px;font:600 10px/1.1 system-ui;text-align:center;width:84px;transform:translate(-50%,9px);box-shadow:0 0 0 1px #fff8;overflow-wrap:anywhere}
-.chip.empty{background:#6b7280;color:#fff}.dot.empty{background:#6b7280}
 #login{margin:0 12px 8px;padding:9px;border-radius:6px;background:var(--chip);color:var(--chipfg);font-weight:600;text-align:center;cursor:pointer}
-.chip.hl{outline:3px solid #f59e0b;z-index:999!important}
+.chip{cursor:pointer}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--chip);border:1px solid #fff;transform:translate(-50%,-50%)}
+#panel{position:fixed;top:0;right:0;bottom:0;width:min(340px,100vw);background:var(--panel);color:var(--fg);border-left:1px solid var(--line);box-shadow:-4px 0 14px #0003;transform:translateX(105%);transition:transform .2s;z-index:2000;overflow:auto;box-sizing:border-box;padding:14px}
+#panel.open{transform:none}#panel h3{margin:0 28px 2px 0;font-size:17px}#panel .sub{opacity:.7;font-size:13px;margin-bottom:10px}
+#panel .x{position:absolute;top:8px;right:10px;border:0;background:none;color:inherit;font-size:24px;cursor:pointer}
+#panel .card{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px}
+#panel .card h4{margin:0 0 6px;font-size:15px}#panel table{width:100%;border-collapse:collapse;font-size:13px}
+#panel td{padding:3px 0;vertical-align:top;border-bottom:1px solid var(--line)}#panel td:first-child{opacity:.65;width:42%;padding-right:8px}
+#panel .note{font-size:12px;color:var(--warn);margin:0 0 8px}
 @media(max-width:640px){#app{flex-direction:column-reverse}#side{width:auto;max-width:none;height:38%;border-right:0;border-top:1px solid var(--line)}}
 </style></head>
 <body><div id="app">
@@ -29,6 +35,7 @@ h2{font-size:13px;margin:14px 8px 4px;color:var(--warn)}
 <div id="login">&#128274; Login to see members</div>
 <input id="q" placeholder="Search name or plot, e.g. A-12" autocomplete="off"><div id="list"></div></div>
 <div id="map"></div></div>
+<aside id="panel" aria-live="polite"><button class="x" aria-label="Close" title="Close">&times;</button><div id="pbody"></div></aside>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>window.UNLOCK=async function(silent){
   const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
@@ -61,20 +68,31 @@ fetch('data.json').then(r=>r.json()).then(D=>{
   const index=()=>{plotMarks=new Map();voters.forEach(v=>v.ids.forEach(id=>{(plotMarks.get(id)||plotMarks.set(id,[]).get(id)).push(v)}))};
   index();
   const layer=L.layerGroup().addTo(map);
-  function draw(){
-    layer.clearLayers();const z=map.getZoom(),far=z<D.maxz-1.5;
-    D.plots.forEach(({id})=>{
-      const vs=plotMarks.get(id),cls=vs?'':' empty';
-      const icon=far?L.divIcon({className:'',html:`<div class="dot${cls}"></div>`,iconSize:[0,0]})
-        :L.divIcon({className:'',html:`<div class="chip${cls}" data-id="${id}">${vs?vs.map(v=>esc(v.name)).join(' / '):esc(id)}</div>`,iconSize:[0,0]});
-      L.marker(ll(at[id]),{icon,title:vs?`${id}: ${vs.map(v=>v.name).join(', ')}`:id}).addTo(layer);
+  const sel=L.layerGroup().addTo(map);
+  const mark=ids=>{sel.clearLayers();ids.forEach(id=>at[id]&&L.circleMarker(ll(at[id]),{radius:26,color:'#f59e0b',weight:3,fill:false,interactive:false}).addTo(sel))};
+  function draw(){                                     // only plots with a member get a marker; the boxes already carry the plot number
+    layer.clearLayers();const far=map.getZoom()<D.maxz-1.5;
+    plotMarks.forEach((vs,id)=>{
+      const icon=far?L.divIcon({className:'',html:'<div class="dot"></div>',iconSize:[0,0]})
+        :L.divIcon({className:'',html:`<div class="chip" data-id="${id}">${vs.map(v=>esc(v.name)).join(' / ')}</div>`,iconSize:[0,0]});
+      L.marker(ll(at[id]),{icon,title:`${id}: ${vs.map(v=>v.name).join(', ')}`}).on('click',()=>openPanel(vs,id)).addTo(layer);
     });
   }
+  const panel=document.getElementById('panel'),pbody=document.getElementById('pbody');
+  function openPanel(vs,title){
+    const ids=[...new Set(vs.flatMap(v=>v.ids||[]))];
+    pbody.innerHTML=`<h3>Plot ${esc(title||ids.join(', ')||vs[0].plot)}</h3><div class="sub">${vs.length>1?vs.length+' members share this plot':'1 member'}${ids.length>1?' - plots '+esc(ids.join(', ')):''}</div>`
+      +(vs.length>1?'<p class="note">Shared plot: counts as one vote.</p>':'')
+      +vs.map(v=>`<div class="card"><h4>${esc(v.name)}</h4><table>`+v.details.map(([k,x])=>`<tr><td>${esc(k)}</td><td>${esc(x)}</td></tr>`).join('')
+        +(v.ids?`<tr><td>Mapped to</td><td>${esc(v.ids.join(', '))}</td></tr>`:'<tr><td>Mapped to</td><td>Not located on the map yet</td></tr>')+'</table></div>').join('');
+    panel.classList.add('open');mark(ids);
+  }
+  const closePanel=()=>{panel.classList.remove('open');mark([])};
+  panel.querySelector('.x').onclick=closePanel;document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel()});
   map.on('zoomend',draw);draw();
   const list=document.getElementById('list'),q=document.getElementById('q'),side=document.getElementById('side');
   const login=document.getElementById('login'),hint=document.getElementById('hint');
-  const hl=ids=>document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('hl',ids.includes(c.dataset.id)));
-  const fly=id=>{if(!at[id])return;map.flyTo(ll(at[id]),D.maxz,{duration:.6});setTimeout(()=>hl([id]),750)};
+  const fly=id=>{if(!at[id])return;mark([id]);map.flyTo(ll(at[id]),D.maxz,{duration:.6})};
   function render(){
     const t=q.value.trim().toLowerCase().replace(/\s+/g,'');
     const m=s=>!t||s.toLowerCase().replace(/[\s]+/g,'').includes(t);
@@ -84,13 +102,14 @@ fetch('data.json').then(r=>r.json()).then(D=>{
     const a=voters.filter(v=>m(v.name+v.plot+v.ids.join('')));
     const b=unlocated.filter(v=>m(v.name+v.plot));
     list.innerHTML=a.map(v=>`<div class="it" data-i="${voters.indexOf(v)}">${esc(v.name)}<small>Plot ${esc(v.plot)} - ${esc(v.type)}</small></div>`).join('')
-     +(b.length?`<h2>Not located on the map yet (${b.length})</h2>`+b.map(v=>`<div class="it no">${esc(v.name)}<small>Plot ${esc(v.plot)} - ${esc(v.type)}</small></div>`).join(''):'');
+     +(b.length?`<h2>Not located on the map yet (${b.length})</h2>`+b.map(v=>`<div class="it no" data-u="${unlocated.indexOf(v)}" data-plot="${esc(v.plot)}">${esc(v.name)}<small>Plot ${esc(v.plot)} - ${esc(v.type)}</small></div>`).join(''):'');
   }
   list.onclick=e=>{
     const p=e.target.closest('.it[data-p]');if(p)return fly(p.dataset.p);
     const it=e.target.closest('.it[data-i]');if(!it)return;
-    const v=voters[+it.dataset.i];map.flyTo(ll(v.at[0]),D.maxz,{duration:.6});setTimeout(()=>hl(v.ids),750)};
-  const enter=r=>{voters=r.voters;unlocated=r.unlocated;isIn=true;index();draw();q.placeholder='Search name or plot, e.g. A-12';
+    const v=voters[+it.dataset.i];map.flyTo(ll(v.at[0]),D.maxz,{duration:.6});openPanel(plotMarks.get(v.ids[0])||[v],v.ids[0])};
+  list.addEventListener('click',e=>{const u=e.target.closest('.it.no');if(u)openPanel([unlocated[+u.dataset.u]],u.dataset.plot)});
+  const enter=r=>{closePanel();voters=r.voters;unlocated=r.unlocated;isIn=true;index();draw();q.placeholder='Search name or plot, e.g. A-12';
     login.style.display='none';hint.textContent='Find your name, check it sits on the right plot. Zoom in with + / pinch. Wrong or missing? Tell the Election Committee within 24 hours.';render()};
   if(isIn||!window.UNLOCK){login.style.display='none'}
   else{
@@ -100,7 +119,7 @@ fetch('data.json').then(r=>r.json()).then(D=>{
     window.UNLOCK(true).then(r=>{if(r)enter(r)}).catch(()=>{});   // silent re-login if this tab already has the password
   }
   q.oninput=render;render();
-  const goto=id=>{if(!at[id])return;map.setView(ll(at[id]),D.maxz,{animate:false});draw();hl([id])};
+  const goto=id=>{if(!at[id])return;map.setView(ll(at[id]),D.maxz,{animate:false});draw();mark([id])};
   const h=decodeURIComponent(location.hash.slice(1)).toUpperCase();if(h)goto(h);   // e.g. index.html#A-12
 });
 </script></body></html>
